@@ -60,7 +60,7 @@ class App(ctk.CTk):
                                           self._settings_tab.get_output_dir)
         self._schedule_tab = ScheduleTab(container, self._scheduler,
                                           self._settings_tab.get_output_dir)
-        self._gif_tab      = GifTab(container, self._settings_tab.get_output_dir)
+        self._gif_tab      = GifTab(container, self._settings_tab.get_gif_output_dir)
 
         for name, widget in [
             ("Download",      self._download_tab),
@@ -115,8 +115,8 @@ class App(ctk.CTk):
 
     # ────────────────────────── callbacks ─────────────────────────────────────
 
-    def _on_scheduled_trigger(self, job_id: str, url: str, output_dir: str):
-        self._download_tab.on_scheduled_job_trigger(job_id, url, output_dir)
+    def _on_scheduled_trigger(self, job_id: str, url: str, output_dir: str, options: dict = None):
+        self._download_tab.on_scheduled_job_trigger(job_id, url, output_dir, options)
 
     def _on_close(self):
         self._scheduler.shutdown()

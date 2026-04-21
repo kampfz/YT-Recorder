@@ -13,7 +13,7 @@ try:
 except ImportError:
     _PIL = False
 
-from services.recorder import DownloadJob, FORMAT_MAP, DEFAULT_FORMAT
+from services.recorder import DownloadJob, FORMAT_MAP, DEFAULT_FORMAT, extract_available_formats
 from services.scheduler import RecordingScheduler
 from utils.binaries import get_binary_path
 from gui.theme import (
@@ -22,7 +22,7 @@ from gui.theme import (
     ACCENT, OK, WARN, ERR, INFO, MONO, UI, badge_colors,
 )
 from gui.widgets import (
-    Frame, Sep, SectionHeader,
+    Frame, Sep, SectionHeader, FlowFrame,
     Entry, Button, Badge, ProgressBar, ScrollFrame,
 )
 
@@ -69,7 +69,8 @@ def _fetch_info(url: str) -> dict | None:
 class VideoCard(tk.Frame):
     """Resolved-video card. Call .show_data(), .show_error(), .hide()."""
 
-    THUMB_W, THUMB_H = 132, 74
+    THUMB_MAX_W, THUMB_MAX_H = 132, 100
+    THUMB_DEFAULT_W, THUMB_DEFAULT_H = 132, 74
 
     def __init__(self, parent):
         super().__init__(parent, bg=BG_ELEV, bd=0,
@@ -78,10 +79,12 @@ class VideoCard(tk.Frame):
         self._is_live = False
         self._dur_str = ""
         self._thumb_photo = None
+        self._thumb_w = self.THUMB_DEFAULT_W
+        self._thumb_h = self.THUMB_DEFAULT_H
         self._build()
 
     def _build(self):
-        self._thumb = tk.Canvas(self, width=self.THUMB_W, height=self.THUMB_H,
+        self._thumb = tk.Canvas(self, width=self._thumb_w, height=self._thumb_h,
                                  bg="#1a2030", highlightthickness=1,
                                  highlightbackground=BD)
         self._thumb.pack(side="left", padx=(10, 10), pady=10)
@@ -116,14 +119,18 @@ class VideoCard(tk.Frame):
         channel = data.get("uploader") or data.get("channel") or ""
         dur_str = data.get("duration_string") or ""
         is_live = bool(data.get("is_live") or data.get("was_live"))
-        height  = data.get("height") or 0
+        vid_width = data.get("width") or 0
+        vid_height = data.get("height") or 0
         self._duration_sec = int(data.get("duration") or 0)
         self._is_live = is_live
         self._dur_str = dur_str
 
+        # Calculate thumbnail dimensions based on video aspect ratio
+        self._update_thumb_size(vid_width, vid_height)
+
         self._title_var.set(title)
         self._channel_var.set(channel)
-        self._status_lbl.configure(text="✓ resolved", fg=OK)
+        self._status_lbl.configure(text="")
 
         thumb_url = data.get("thumbnail") or ""
         if thumb_url and _PIL:
@@ -141,8 +148,8 @@ class VideoCard(tk.Frame):
         pills = [("type", "LIVE" if is_live else "VOD")]
         if dur_str:
             pills.append(("dur", dur_str))
-        if height:
-            pills.append(("best", f"{height}p"))
+        if vid_height:
+            pills.append(("best", f"{vid_height}p"))
         subs = data.get("subtitles") or {}
         if subs:
             langs = ", ".join(list(subs.keys())[:3])
@@ -161,6 +168,15 @@ class VideoCard(tk.Frame):
             w.destroy()
         self.pack(fill="x", padx=14, pady=(4, 4))
 
+    def show_loading(self):
+        self._title_var.set("Fetching video info...")
+        self._channel_var.set("")
+        self._status_lbl.configure(text="", fg=FG_DIM)
+        self._draw_thumb_placeholder()
+        for w in self._pills_row.winfo_children():
+            w.destroy()
+        self.pack(fill="x", padx=14, pady=(4, 4))
+
     def hide(self):
         self.pack_forget()
 
@@ -174,14 +190,31 @@ class VideoCard(tk.Frame):
 
     # ── thumbnail ─────────────────────────────────────────────────────────────
 
+    def _update_thumb_size(self, vid_width: int, vid_height: int):
+        """Calculate and apply thumbnail size based on video aspect ratio."""
+        if vid_width and vid_height:
+            aspect = vid_width / vid_height
+            if aspect < 1:  # Vertical video (e.g., 9:16)
+                self._thumb_h = self.THUMB_MAX_H
+                self._thumb_w = max(50, int(self._thumb_h * aspect))
+            else:  # Horizontal video (e.g., 16:9)
+                self._thumb_w = self.THUMB_MAX_W
+                self._thumb_h = max(50, int(self._thumb_w / aspect))
+        else:
+            self._thumb_w = self.THUMB_DEFAULT_W
+            self._thumb_h = self.THUMB_DEFAULT_H
+
+        self._thumb.configure(width=self._thumb_w, height=self._thumb_h)
+
     def _fetch_thumbnail(self, url: str, is_live: bool):
+        thumb_w, thumb_h = self._thumb_w, self._thumb_h
         def _go():
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     raw = resp.read()
                 img = Image.open(io.BytesIO(raw)).convert("RGB")
-                img = img.resize((self.THUMB_W, self.THUMB_H), Image.LANCZOS)
+                img = img.resize((thumb_w, thumb_h), Image.LANCZOS)
                 photo = ImageTk.PhotoImage(img)
                 self.after(0, self._apply_thumbnail, photo)
             except Exception:
@@ -199,16 +232,16 @@ class VideoCard(tk.Frame):
             return
         txt = self._dur_str
         pad_x, pad_y = 4, 3
-        x0 = self.THUMB_W - len(txt) * 6 - pad_x * 2 - 2
-        y0 = self.THUMB_H - 14
-        self._thumb.create_rectangle(x0, y0, self.THUMB_W - 2, self.THUMB_H - 2,
+        x0 = self._thumb_w - len(txt) * 6 - pad_x * 2 - 2
+        y0 = self._thumb_h - 14
+        self._thumb.create_rectangle(x0, y0, self._thumb_w - 2, self._thumb_h - 2,
                                       fill="#0a0a0a", outline="")
         self._thumb.create_text(x0 + pad_x, y0 + pad_y, text=txt,
                                  fill="white", font=(MONO, 8, "bold"), anchor="nw")
 
     def _draw_thumb_placeholder(self):
         self._thumb.delete("all")
-        cx, cy = self.THUMB_W // 2, self.THUMB_H // 2
+        cx, cy = self._thumb_w // 2, self._thumb_h // 2
         self._thumb.create_polygon(
             cx - 18, cy - 13, cx - 18, cy + 13, cx + 18, cy,
             fill="#ffffff", outline="",
@@ -238,8 +271,9 @@ class ClipBar(tk.Frame):
 
     HANDLE_HIT = 10  # px tolerance for hit detection
 
-    def __init__(self, parent, on_change=None):
-        super().__init__(parent, bg=BG_PANEL, bd=0, highlightthickness=0)
+    def __init__(self, parent, on_change=None, bg=BG_PANEL):
+        super().__init__(parent, bg=bg, bd=0, highlightthickness=0)
+        self._bg = bg
         self._duration = 0
         self._start_frac = 0.0
         self._end_frac   = 1.0
@@ -257,11 +291,11 @@ class ClipBar(tk.Frame):
         self._canvas.bind("<Motion>",          self._on_hover)
 
         # Scale labels row
-        self._scale = tk.Frame(self, bg=BG_PANEL, bd=0, highlightthickness=0)
+        self._scale = tk.Frame(self, bg=self._bg, bd=0, highlightthickness=0)
         self._scale.pack(fill="x", pady=(2, 0))
         self._scale_lbls: list[tk.Label] = []
         for _ in range(5):
-            lbl = tk.Label(self._scale, text="", fg=FG_FAINT, bg=BG_PANEL,
+            lbl = tk.Label(self._scale, text="", fg=FG_FAINT, bg=self._bg,
                            font=(MONO, 9))
             self._scale_lbls.append(lbl)
         self._update_scale()
@@ -603,49 +637,46 @@ class DownloadTab(tk.Frame):
         fc.columnconfigure(0, weight=1)
         fc.columnconfigure(1, weight=1)
 
-        # Format chips
+        # Format chips (dynamically updated based on video metadata)
         fmt_f = Frame(fc)
         fmt_f.grid(row=0, column=0, sticky="nsew", padx=(0, 20))
         SectionHeader(fmt_f, "FORMAT", hint="container · codec"
                       ).pack(anchor="w", pady=(0, 6))
-        chips = Frame(fmt_f)
-        chips.pack(anchor="w")
-        for fmt in FORMATS:
-            active = fmt == self._selected_fmt
-            btn = tk.Button(
-                chips, text=fmt,
-                bg="#0e1f38" if active else BG_INPUT,
-                fg=INFO if active else FG_MUTED,
-                activebackground=BG_ELEV, activeforeground=FG,
-                relief="flat", bd=0, highlightthickness=1,
-                highlightbackground=ACCENT if active else BD,
-                padx=8, pady=3, font=(MONO, 10), cursor="hand2",
-                command=lambda f=fmt: self._select_fmt(f),
-            )
-            btn.pack(side="left", padx=(0, 4))
-            self._chip_btns[fmt] = btn
+        self._chips_frame = FlowFrame(fmt_f, padx=4, pady=4)
+        self._chips_frame.pack(fill="x", expand=True)
+        self._available_formats: list[dict] = []
+        self._rebuild_format_chips(FORMATS)
 
-        # Clip range
-        clip_f = Frame(fc)
-        clip_f.grid(row=0, column=1, sticky="nsew")
-        SectionHeader(clip_f, "CLIP RANGE",
-                      hint="leave empty for full video").pack(anchor="w", pady=(0, 6))
+        # Clip range (card style)
+        clip_card = tk.Frame(fc, bg=BG_ELEV, bd=0,
+                             highlightthickness=1, highlightbackground=BD_SUBTLE)
+        clip_card.grid(row=0, column=1, sticky="nsew")
 
-        inp_row = Frame(clip_f)
+        clip_hdr = Frame(clip_card, bg=BG_ELEV)
+        clip_hdr.pack(fill="x", padx=14, pady=(10, 8))
+        tk.Label(clip_hdr, text="CLIP RANGE", fg=FG_MUTED, bg=BG_ELEV,
+                 font=(MONO, 10, "bold")).pack(side="left")
+        tk.Label(clip_hdr, text="leave empty for full video", fg=FG_FAINT, bg=BG_ELEV,
+                 font=(MONO, 10)).pack(side="left", padx=(8, 0))
+
+        clip_inner = Frame(clip_card, bg=BG_ELEV)
+        clip_inner.pack(fill="x", padx=14, pady=(0, 14))
+
+        inp_row = Frame(clip_inner, bg=BG_ELEV)
         inp_row.pack(anchor="w", pady=(0, 6))
-        tk.Label(inp_row, text="FROM", fg=FG_DIM, bg=BG_PANEL,
+        tk.Label(inp_row, text="FROM", fg=FG_DIM, bg=BG_ELEV,
                  font=(MONO, 10)).pack(side="left", padx=(0, 4))
         self._clip_start = Entry(inp_row, mono_font=True, width=10)
         self._clip_start.pack(side="left", padx=(0, 8), ipady=3)
-        tk.Label(inp_row, text="→", fg=FG_FAINT, bg=BG_PANEL,
+        tk.Label(inp_row, text="→", fg=FG_FAINT, bg=BG_ELEV,
                  font=(MONO, 11)).pack(side="left")
-        tk.Label(inp_row, text="TO", fg=FG_DIM, bg=BG_PANEL,
+        tk.Label(inp_row, text="TO", fg=FG_DIM, bg=BG_ELEV,
                  font=(MONO, 10)).pack(side="left", padx=(8, 4))
         self._clip_end = Entry(inp_row, mono_font=True, width=10)
         self._clip_end.pack(side="left", ipady=3)
 
-        self._clip_bar = ClipBar(clip_f, on_change=self._on_clipbar_drag)
-        self._clip_bar.pack(fill="x", pady=(0, 4))
+        self._clip_bar = ClipBar(clip_inner, on_change=self._on_clipbar_drag, bg=BG_ELEV)
+        self._clip_bar.pack(fill="x")
 
         # Update clip bar when time fields change
         for e in (self._clip_start, self._clip_end):
@@ -768,6 +799,9 @@ class DownloadTab(tk.Frame):
             self._clip_end.delete(0, tk.END)
             self._clip_end.insert(0, end_str)
             self._clip_bar.set_range("00:00:00", end_str)
+        # Update format chips based on available formats
+        available = extract_available_formats(data)
+        self._rebuild_format_chips(available)
 
     # ── clip bar update ───────────────────────────────────────────────────────
 
@@ -785,6 +819,38 @@ class DownloadTab(tk.Frame):
         self._clip_end.insert(0, end_str)
 
     # ── actions ───────────────────────────────────────────────────────────────
+
+    def _rebuild_format_chips(self, formats):
+        """Rebuild format chip buttons based on available formats."""
+        self._chips_frame.clear()
+        self._chip_btns.clear()
+
+        # Handle both list of strings and list of dicts
+        if formats and isinstance(formats[0], dict):
+            self._available_formats = formats
+            format_labels = [f["label"] for f in formats]
+        else:
+            self._available_formats = []
+            format_labels = list(formats)
+
+        # Select first format if current selection not available
+        if self._selected_fmt not in format_labels and format_labels:
+            self._selected_fmt = format_labels[0]
+
+        for fmt in format_labels:
+            active = fmt == self._selected_fmt
+            btn = tk.Button(
+                self._chips_frame, text=fmt,
+                bg="#0e1f38" if active else BG_INPUT,
+                fg=INFO if active else FG_MUTED,
+                activebackground=BG_ELEV, activeforeground=FG,
+                relief="flat", bd=0, highlightthickness=1,
+                highlightbackground=ACCENT if active else BD,
+                padx=8, pady=3, font=(MONO, 10), cursor="hand2",
+                command=lambda f=fmt: self._select_fmt(f),
+            )
+            self._chips_frame.add_widget(btn)
+            self._chip_btns[fmt] = btn
 
     def _select_fmt(self, fmt: str):
         self._selected_fmt = fmt
@@ -841,6 +907,13 @@ class DownloadTab(tk.Frame):
                 clip_start = clip_end = None
         output_dir = self._get_output_dir()
 
+        # Find format_info for selected format
+        format_info = None
+        for f in self._available_formats:
+            if f.get("label") == self._selected_fmt:
+                format_info = f
+                break
+
         self._add_row(job_id, url)
 
         def _on_status(jid, status):
@@ -849,6 +922,7 @@ class DownloadTab(tk.Frame):
 
         job = DownloadJob(job_id, url, output_dir, is_live, _on_status,
                           format_key=self._selected_fmt,
+                          format_info=format_info,
                           clip_start=clip_start, clip_end=clip_end)
         self._jobs[job_id]["job"] = job
         job.start()
@@ -1061,7 +1135,9 @@ class DownloadTab(tk.Frame):
     def get_output_dir(self) -> str:
         return self._get_output_dir()
 
-    def on_scheduled_job_trigger(self, job_id: str, url: str, output_dir: str):
+    def on_scheduled_job_trigger(self, job_id: str, url: str, output_dir: str, options: dict = None):
+        options = options or {}
+
         def _start():
             if job_id not in self._jobs:
                 self._add_row(job_id, url)
@@ -1070,7 +1146,13 @@ class DownloadTab(tk.Frame):
                 self.after(0, self._update_job_status, jid, status)
                 self.after(0, self._refresh_stats)
 
-            job = DownloadJob(job_id, url, output_dir, is_live=True, on_status=_on_status)
+            job = DownloadJob(
+                job_id, url, output_dir, is_live=True, on_status=_on_status,
+                format_key=options.get("format_key", "mp4 1080p"),
+                end_time=options.get("end_time"),
+                duration_minutes=options.get("duration_minutes"),
+                auto_stop=options.get("auto_stop", True),
+            )
             if job_id in self._jobs:
                 self._jobs[job_id]["job"] = job
             job.start()

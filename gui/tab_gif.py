@@ -5,6 +5,8 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, ttk
 
+from PIL import Image, ImageTk
+
 from services.gif_converter import convert_to_gif, download_and_convert_to_gif
 from gui.theme import (
     BG_PANEL, BG_ELEV, BG_INPUT, BD, BD_SUBTLE,
@@ -13,7 +15,7 @@ from gui.theme import (
 )
 from gui.widgets import (
     Frame, Sep, SectionHeader, Label, MonoLabel,
-    Entry, Button, ProgressBar, ScrollFrame,
+    Entry, Button, ProgressBar, ScrollFrame, Spinbox, Slider,
 )
 from gui.tab_download import ClipBar, VideoCard
 from utils.binaries import get_binary_path
@@ -39,7 +41,32 @@ class GifTab(tk.Frame):
         self._get_output_dir = get_output_dir or (lambda: os.path.expanduser("~/Videos"))
         self._source_mode = "local"
         self._debounce_id = None
+        self._gif_frames = []
+        self._gif_frame_idx = 0
+        self._gif_anim_id = None
+        self._current_gif_path = None
+        self._video_aspect = 16 / 9  # Default to 16:9, updated when metadata loads
+        self._setup_styles()
         self._build()
+
+    def _setup_styles(self):
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure('Dark.TCombobox',
+                        fieldbackground=BG_INPUT,
+                        background=BG_INPUT,
+                        foreground=FG,
+                        arrowcolor=FG_DIM,
+                        bordercolor=BD,
+                        lightcolor=BD,
+                        darkcolor=BD,
+                        selectbackground=BG_INPUT,
+                        selectforeground=FG)
+        style.map('Dark.TCombobox',
+                  fieldbackground=[('readonly', BG_INPUT), ('disabled', '#0a0d11')],
+                  background=[('active', BG_ELEV), ('pressed', BG_ELEV)],
+                  foreground=[('disabled', FG_DIM)],
+                  arrowcolor=[('disabled', FG_FAINT)])
 
     def _build(self):
         self.grid_rowconfigure(1, weight=1)
@@ -188,7 +215,13 @@ class GifTab(tk.Frame):
             dur = int(data.get("duration") or 0)
             if dur:
                 self._apply_duration(dur)
-            # Extract available video widths from formats
+            # Update video aspect ratio for preview
+            vid_w = data.get("width") or 0
+            vid_h = data.get("height") or 0
+            if vid_w and vid_h:
+                self._video_aspect = vid_w / vid_h
+                self._redraw_preview()
+            # Populate width dropdown with available resolutions
             widths = set()
             for fmt in data.get("formats") or []:
                 w = fmt.get("width")
@@ -252,27 +285,50 @@ class GifTab(tk.Frame):
         col.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         col.grid_rowconfigure(99, weight=1)
 
-        # ── Clip Range ──
-        SectionHeader(col, "CLIP RANGE",
-                      hint="leave empty for full video").pack(anchor="w", pady=(0, 6))
+        # ── Time Range (card style) ──
+        clip_card = _fieldset(col, "TIME RANGE", "HH:MM:SS")
+        clip_inner = Frame(clip_card, bg=BG_ELEV)
+        clip_inner.pack(fill="x", padx=14, pady=(0, 14))
 
-        inp_row = Frame(col)
-        inp_row.pack(anchor="w", pady=(0, 6))
-        tk.Label(inp_row, text="FROM", fg=FG_DIM, bg=BG_PANEL,
-                 font=(MONO, 10)).pack(side="left", padx=(0, 4))
-        self._clip_start = Entry(inp_row, mono_font=True, width=10)
-        self._clip_start.pack(side="left", padx=(0, 8), ipady=3)
+        # Start row
+        start_row = Frame(clip_inner, bg=BG_ELEV)
+        start_row.pack(fill="x", pady=(0, 6))
+        tk.Label(start_row, text="Start", fg=FG_MUTED, bg=BG_ELEV,
+                 font=(UI, 11), width=8, anchor="w").pack(side="left")
+        self._clip_start = Entry(start_row, mono_font=True, width=10)
+        self._clip_start.pack(side="left", ipady=4)
         self._clip_start.insert(0, "00:00:00")
-        tk.Label(inp_row, text="→", fg=FG_FAINT, bg=BG_PANEL,
-                 font=(MONO, 11)).pack(side="left")
-        tk.Label(inp_row, text="TO", fg=FG_DIM, bg=BG_PANEL,
-                 font=(MONO, 10)).pack(side="left", padx=(8, 4))
-        self._clip_end = Entry(inp_row, mono_font=True, width=10)
-        self._clip_end.pack(side="left", ipady=3)
+        tk.Label(start_row, text="→  End", fg=FG_DIM, bg=BG_ELEV,
+                 font=(UI, 11)).pack(side="left", padx=(12, 8))
+        self._clip_end = Entry(start_row, mono_font=True, width=10)
+        self._clip_end.pack(side="left", ipady=4)
         self._clip_end.insert(0, "00:00:10")
 
-        self._clip_bar = ClipBar(col, on_change=self._on_clipbar_drag)
-        self._clip_bar.pack(fill="x", pady=(0, 10))
+        # Duration row
+        dur_row = Frame(clip_inner, bg=BG_ELEV)
+        dur_row.pack(fill="x", pady=(0, 8))
+        tk.Label(dur_row, text="Duration", fg=FG_MUTED, bg=BG_ELEV,
+                 font=(UI, 11), width=8, anchor="w").pack(side="left")
+
+        # Duration badge
+        dur_badge = tk.Frame(dur_row, bg=BG_INPUT, bd=0,
+                              highlightthickness=1, highlightbackground=BD_SUBTLE)
+        dur_badge.pack(side="left")
+        self._duration_lbl = tk.Label(dur_badge, text="Δ 00:00:10", fg=ACCENT, bg=BG_INPUT,
+                                       font=(MONO, 11), padx=8, pady=2)
+        self._duration_lbl.pack()
+
+        # Frames badge
+        frames_badge = tk.Frame(dur_row, bg=BG_INPUT, bd=0,
+                                 highlightthickness=1, highlightbackground=BD_SUBTLE)
+        frames_badge.pack(side="left", padx=(8, 0))
+        self._frames_lbl = tk.Label(frames_badge, text="frames 150", fg=FG_DIM, bg=BG_INPUT,
+                                     font=(MONO, 10), padx=8, pady=2)
+        self._frames_lbl.pack()
+
+        # Clip bar
+        self._clip_bar = ClipBar(clip_inner, on_change=self._on_clipbar_drag, bg=BG_ELEV)
+        self._clip_bar.pack(fill="x")
 
         for e in (self._clip_start, self._clip_end):
             e.bind("<KeyRelease>", self._on_clip_change)
@@ -288,9 +344,10 @@ class GifTab(tk.Frame):
         fps_row = Frame(og, bg=BG_ELEV)
         fps_row.grid(row=0, column=1, sticky="w")
         self._fps_var = tk.StringVar(value="15")
-        Entry(fps_row, textvariable=self._fps_var, mono_font=True, width=5
-              ).pack(side="left", ipady=3)
-        tk.Label(fps_row, text="frames/sec", fg=FG_DIM, bg=BG_ELEV,
+        self._fps_spin = Spinbox(fps_row, value=15, min_val=1, max_val=60,
+                                  width=4, variable=self._fps_var, bg=BG_ELEV)
+        self._fps_spin.pack(side="left")
+        tk.Label(fps_row, text="frames per second", fg=FG_DIM, bg=BG_ELEV,
                  font=(MONO, 10)).pack(side="left", padx=(8, 0))
 
         # Width
@@ -300,11 +357,13 @@ class GifTab(tk.Frame):
         w_row.grid(row=1, column=1, sticky="w")
         self._width_var = tk.StringVar(value="480")
         self._width_combo = ttk.Combobox(
-            w_row, textvariable=self._width_var, width=6,
+            w_row, textvariable=self._width_var, width=7,
             values=["320", "480", "640", "720", "960", "1280"],
             font=(MONO, 11),
+            style='Dark.TCombobox',
+            justify="center",
         )
-        self._width_combo.pack(side="left")
+        self._width_combo.pack(side="left", ipady=3)
         tk.Label(w_row, text="px · height auto", fg=FG_DIM, bg=BG_ELEV,
                  font=(MONO, 10)).pack(side="left", padx=(8, 0))
 
@@ -314,20 +373,9 @@ class GifTab(tk.Frame):
         q_row = Frame(og, bg=BG_ELEV)
         q_row.grid(row=2, column=1, sticky="ew")
         self._quality_var = tk.IntVar(value=7)
-        self._quality_lbl = tk.Label(q_row, text="7", fg=FG, bg=BG_INPUT,
-                                      font=(MONO, 12, "bold"), width=3,
-                                      highlightthickness=1, highlightbackground=BD)
-        slider = tk.Scale(
-            q_row, from_=1, to=10, orient="horizontal",
-            variable=self._quality_var, showvalue=False,
-            bg=BG_ELEV, fg=FG_DIM, troughcolor=BG_INPUT,
-            activebackground=ACCENT, highlightthickness=0,
-            sliderrelief="flat", sliderlength=14, width=6,
-            length=140, bd=0, relief="flat",
-            command=lambda v: self._quality_lbl.configure(text=str(int(float(v)))),
-        )
-        slider.pack(side="left")
-        self._quality_lbl.pack(side="left", padx=(8, 0), ipady=3, ipadx=4)
+        self._quality_slider = Slider(q_row, from_=1, to=10, value=7,
+                                        variable=self._quality_var, bg=BG_ELEV)
+        self._quality_slider.pack(side="left")
 
         # Buttons
         btn_row = Frame(col)
@@ -348,6 +396,9 @@ class GifTab(tk.Frame):
         self._prev_info_lbl = tk.Label(prev_hdr, text="480 × 270 · 15 fps · q7",
                                         fg=FG_FAINT, bg=BG_PANEL, font=(MONO, 10))
         self._prev_info_lbl.pack(side="left", padx=(8, 0))
+        self._copy_btn = Button(prev_hdr, "Copy", command=self._on_copy_gif, ghost=True)
+        self._copy_btn.pack(side="right")
+        self._copy_btn.configure(state="disabled")
 
         # Striped preview canvas (16:9)
         self._prev_canvas = tk.Canvas(col, bg="#1a2030", bd=0,
@@ -379,8 +430,10 @@ class GifTab(tk.Frame):
 
     def _redraw_preview(self, event=None):
         w = self._prev_canvas.winfo_width() or 400
-        h = max(int(w * 9 / 16), 1)
+        h = max(int(w / self._video_aspect), 1)
         self._prev_canvas.configure(height=h)
+        if self._gif_frames:
+            return
         self._prev_canvas.delete("all")
         for i in range(0, w, 16):
             c = "#141820" if (i // 16) % 2 == 0 else "#11151c"
@@ -389,6 +442,70 @@ class GifTab(tk.Frame):
         self._prev_canvas.create_polygon(cx - 14, cy - 9, cx - 14, cy + 9,
                                           cx + 14, cy, fill="white", outline="")
 
+    def _load_gif_preview(self, gif_path: str):
+        self._stop_gif_animation()
+        self._gif_frames = []
+        self._current_gif_path = gif_path
+        self._copy_btn.configure(state="normal")
+        try:
+            img = Image.open(gif_path)
+            # Update aspect ratio from the actual GIF dimensions
+            if img.width and img.height:
+                self._video_aspect = img.width / img.height
+                self._redraw_preview()
+            canvas_w = self._prev_canvas.winfo_width() or 400
+            canvas_h = int(canvas_w / self._video_aspect)
+            frame_idx = 0
+            while True:
+                try:
+                    img.seek(frame_idx)
+                except EOFError:
+                    break
+                frame = img.copy().convert("RGBA")
+                frame.thumbnail((canvas_w, canvas_h), Image.Resampling.LANCZOS)
+                self._gif_frames.append((ImageTk.PhotoImage(frame), img.info.get("duration", 100)))
+                frame_idx += 1
+        except Exception:
+            return
+        if self._gif_frames:
+            self._gif_frame_idx = 0
+            self._animate_gif()
+
+    def _animate_gif(self):
+        if not self._gif_frames:
+            return
+        frame_data = self._gif_frames[self._gif_frame_idx]
+        photo, duration = frame_data
+        canvas_w = self._prev_canvas.winfo_width() or 400
+        canvas_h = self._prev_canvas.winfo_height() or int(canvas_w / self._video_aspect)
+        self._prev_canvas.delete("all")
+        self._prev_canvas.create_image(canvas_w // 2, canvas_h // 2, image=photo, anchor="center")
+        self._gif_frame_idx = (self._gif_frame_idx + 1) % len(self._gif_frames)
+        self._gif_anim_id = self.after(max(duration, 20), self._animate_gif)
+
+    def _stop_gif_animation(self):
+        if self._gif_anim_id:
+            self.after_cancel(self._gif_anim_id)
+            self._gif_anim_id = None
+        self._gif_frames = []
+        self._gif_frame_idx = 0
+        self._current_gif_path = None
+        if hasattr(self, "_copy_btn"):
+            self._copy_btn.configure(state="disabled")
+
+    def _on_copy_gif(self):
+        if not self._current_gif_path or not os.path.isfile(self._current_gif_path):
+            return
+        try:
+            subprocess.run(
+                ["powershell", "-Command",
+                 f'Set-Clipboard -Path "{self._current_gif_path}"'],
+                capture_output=True, timeout=5,
+            )
+            self._set_status("Copied to clipboard!", OK)
+        except Exception as e:
+            self._set_status(f"Copy failed: {e}", ERR)
+
     # ── clip bar sync ─────────────────────────────────────────────────────────
 
     def _on_clip_change(self, _event=None):
@@ -396,16 +513,33 @@ class GifTab(tk.Frame):
         e = self._clip_end.get().strip()
         if s or e:
             self._clip_bar.set_range(s or "00:00:00", e or "00:00:00")
+        self._update_duration_display()
 
     def _on_clipbar_drag(self, start_str: str, end_str: str):
         self._clip_start.delete(0, tk.END)
         self._clip_start.insert(0, start_str)
         self._clip_end.delete(0, tk.END)
         self._clip_end.insert(0, end_str)
+        self._update_duration_display()
+
+    def _update_duration_display(self):
+        try:
+            s = ClipBar._parse(self._clip_start.get().strip() or "00:00:00")
+            e = ClipBar._parse(self._clip_end.get().strip() or "00:00:00")
+            dur = max(0, int(e - s))
+            fps = int(self._fps_var.get() or 15)
+            frames = dur * fps
+            dur_str = ClipBar._fmt_time(dur)
+            self._duration_lbl.configure(text=f"Δ {dur_str}")
+            self._frames_lbl.configure(text=f"frames {frames}")
+        except Exception:
+            pass
 
     # ── actions ───────────────────────────────────────────────────────────────
 
     def _on_convert(self):
+        self._stop_gif_animation()
+        self._redraw_preview()
         src = self._src_var.get().strip()
         if not src:
             self._set_status("No source selected.", ERR)
@@ -460,6 +594,10 @@ class GifTab(tk.Frame):
             self._prog_bar.set(1.0, mode="done")
             self._set_status(msg, OK)
             self._convert_btn.configure(state="normal")
+            if "→" in msg:
+                gif_path = msg.split("→", 1)[1].strip()
+                if os.path.isfile(gif_path):
+                    self._load_gif_preview(gif_path)
         elif "Downloading video" in msg:
             self._prog_bar.set(0.05)
             self._set_status(msg, INFO)
@@ -497,7 +635,12 @@ class GifTab(tk.Frame):
         self._fps_var.set("15")
         self._width_var.set("480")
         self._quality_var.set(7)
+        self._duration_lbl.configure(text="Δ 00:00:10")
+        self._frames_lbl.configure(text="frames 150")
         self._prog_bar.set(0)
         self._enc_tag.configure(text="READY")
         self._convert_btn.configure(state="normal")
         self._set_status("Select a source file to begin.", FG_MUTED)
+        self._video_aspect = 16 / 9  # Reset to default 16:9
+        self._stop_gif_animation()
+        self._redraw_preview()

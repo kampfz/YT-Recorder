@@ -53,6 +53,55 @@ def SectionHeader(parent, text, hint="", bg=BG_PANEL):
     return f
 
 
+class FlowFrame(tk.Frame):
+    """A frame that wraps children to the next line when width is exceeded."""
+
+    def __init__(self, parent, bg=BG_PANEL, padx=4, pady=4, **kw):
+        super().__init__(parent, bg=bg, bd=0, highlightthickness=0, **kw)
+        self._padx = padx
+        self._pady = pady
+        self._widgets = []
+        self.bind("<Configure>", self._on_configure)
+
+    def add_widget(self, widget):
+        self._widgets.append(widget)
+        self._layout()
+
+    def clear(self):
+        for w in self._widgets:
+            w.destroy()
+        self._widgets.clear()
+
+    def _on_configure(self, event=None):
+        self._layout()
+
+    def _layout(self):
+        if not self._widgets:
+            return
+        max_width = self.winfo_width()
+        if max_width <= 1:
+            max_width = self.winfo_reqwidth() or 400
+
+        x, y = 0, 0
+        row_height = 0
+
+        for w in self._widgets:
+            w.update_idletasks()
+            w_width = w.winfo_reqwidth()
+            w_height = w.winfo_reqheight()
+
+            if x + w_width > max_width and x > 0:
+                x = 0
+                y += row_height + self._pady
+                row_height = 0
+
+            w.place(x=x, y=y)
+            x += w_width + self._padx
+            row_height = max(row_height, w_height)
+
+        self.configure(height=y + row_height + self._pady)
+
+
 # ── inputs ────────────────────────────────────────────────────────────────────
 
 def Entry(parent, textvariable=None, mono_font=False, width=0, placeholder="", **kw):
@@ -267,6 +316,186 @@ def Pill(parent, key="", value="", bg=BG_PANEL):
     tk.Label(f, text=value, fg=FG, bg="#0d1015",
              font=(MONO, 10)).pack(side="left", padx=(0, 6), pady=2)
     return f
+
+
+# ── spinbox (numeric input with +/- buttons) ─────────────────────────────────
+
+class Spinbox(tk.Frame):
+    """Dark-themed numeric input with increment/decrement buttons."""
+
+    def __init__(self, parent, value=0, min_val=1, max_val=999, width=5,
+                 variable=None, bg=BG_ELEV, **kw):
+        super().__init__(parent, bg=bg, bd=0, highlightthickness=0, **kw)
+        self._min = min_val
+        self._max = max_val
+        self._var = variable or tk.StringVar(value=str(value))
+        self._bg = bg
+
+        # Main container with border
+        box = tk.Frame(self, bg=BG_INPUT, bd=0,
+                       highlightthickness=1, highlightbackground=BD)
+        box.pack(side="left")
+
+        # Entry
+        self._entry = tk.Entry(
+            box, textvariable=self._var, width=width,
+            bg=BG_INPUT, fg=FG, insertbackground=FG,
+            relief="flat", bd=0, highlightthickness=0,
+            font=(MONO, 11), justify="center",
+        )
+        self._entry.pack(side="left", padx=(8, 0), pady=4, ipady=2)
+
+        # Buttons container
+        btn_frame = tk.Frame(box, bg=BG_INPUT)
+        btn_frame.pack(side="left", padx=(2, 4), pady=2)
+
+        # Up button
+        self._up = tk.Button(
+            btn_frame, text="▲", command=self._increment,
+            bg=BG_INPUT, fg=FG_DIM, activebackground=BG_ELEV, activeforeground=FG,
+            relief="flat", bd=0, highlightthickness=0,
+            font=(UI, 6), padx=4, pady=0, cursor="hand2",
+        )
+        self._up.pack(side="top")
+
+        # Down button
+        self._down = tk.Button(
+            btn_frame, text="▼", command=self._decrement,
+            bg=BG_INPUT, fg=FG_DIM, activebackground=BG_ELEV, activeforeground=FG,
+            relief="flat", bd=0, highlightthickness=0,
+            font=(UI, 6), padx=4, pady=0, cursor="hand2",
+        )
+        self._down.pack(side="top")
+
+    def _increment(self):
+        try:
+            val = int(self._var.get()) + 1
+            if val <= self._max:
+                self._var.set(str(val))
+        except ValueError:
+            pass
+
+    def _decrement(self):
+        try:
+            val = int(self._var.get()) - 1
+            if val >= self._min:
+                self._var.set(str(val))
+        except ValueError:
+            pass
+
+    def get(self):
+        return self._var.get()
+
+    def set(self, value):
+        self._var.set(str(value))
+
+    @property
+    def variable(self):
+        return self._var
+
+
+# ── slider with value display ─────────────────────────────────────────────────
+
+class Slider(tk.Frame):
+    """Dark-themed slider with min/max labels and value display box."""
+
+    def __init__(self, parent, from_=1, to=10, value=5, variable=None,
+                 width=160, bg=BG_ELEV, command=None, **kw):
+        super().__init__(parent, bg=bg, bd=0, highlightthickness=0, **kw)
+        self._from = from_
+        self._to = to
+        self._var = variable or tk.IntVar(value=value)
+        self._command = command
+        self._bg = bg
+        self._dragging = False
+
+        # Min label
+        tk.Label(self, text=str(from_), fg=FG_FAINT, bg=bg,
+                 font=(MONO, 9)).pack(side="left", padx=(0, 4))
+
+        # Canvas for custom slider track
+        self._canvas = tk.Canvas(self, width=width, height=20, bg=bg,
+                                  highlightthickness=0, bd=0)
+        self._canvas.pack(side="left")
+        self._canvas.bind("<ButtonPress-1>", self._on_click)
+        self._canvas.bind("<B1-Motion>", self._on_drag)
+        self._canvas.bind("<ButtonRelease-1>", self._on_release)
+
+        # Max label
+        tk.Label(self, text=str(to), fg=FG_FAINT, bg=bg,
+                 font=(MONO, 9)).pack(side="left", padx=(4, 8))
+
+        # Value display box
+        self._val_lbl = tk.Label(self, text=str(self._var.get()), fg=FG, bg=BG_INPUT,
+                                  font=(MONO, 11, "bold"), width=3,
+                                  highlightthickness=1, highlightbackground=BD)
+        self._val_lbl.pack(side="left", ipady=2)
+
+        self._width = width
+        self._var.trace_add("write", self._on_var_change)
+        self.after(10, self._draw)
+
+    def _draw(self):
+        c = self._canvas
+        c.delete("all")
+        w = self._width
+        h = 20
+        track_y = h // 2
+
+        # Track background
+        c.create_line(8, track_y, w - 8, track_y, fill=BD, width=3, capstyle="round")
+
+        # Calculate thumb position
+        val = self._var.get()
+        frac = (val - self._from) / (self._to - self._from)
+        thumb_x = 8 + int(frac * (w - 16))
+
+        # Filled portion
+        c.create_line(8, track_y, thumb_x, track_y, fill=ACCENT, width=3, capstyle="round")
+
+        # Thumb - white square with blue outline when dragging
+        thumb_size = 6
+        outline_color = ACCENT if self._dragging else ""
+        outline_width = 2 if self._dragging else 0
+        c.create_rectangle(
+            thumb_x - thumb_size, track_y - thumb_size,
+            thumb_x + thumb_size, track_y + thumb_size,
+            fill="#ffffff", outline=outline_color, width=outline_width
+        )
+
+    def _on_click(self, event):
+        self._dragging = True
+        self._set_from_x(event.x)
+
+    def _on_drag(self, event):
+        self._set_from_x(event.x)
+
+    def _on_release(self, event):
+        self._dragging = False
+        self._draw()
+
+    def _set_from_x(self, x):
+        w = self._width
+        frac = max(0, min(1, (x - 8) / (w - 16)))
+        val = int(self._from + frac * (self._to - self._from))
+        val = max(self._from, min(self._to, val))
+        self._var.set(val)
+
+    def _on_var_change(self, *_):
+        self._val_lbl.configure(text=str(self._var.get()))
+        self._draw()
+        if self._command:
+            self._command(self._var.get())
+
+    def get(self):
+        return self._var.get()
+
+    def set(self, value):
+        self._var.set(value)
+
+    @property
+    def variable(self):
+        return self._var
 
 
 # ── scrollable container ──────────────────────────────────────────────────────

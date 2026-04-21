@@ -18,7 +18,9 @@ class SettingsTab(tk.Frame):
         super().__init__(master, bg=BG_PANEL, bd=0, highlightthickness=0)
         self._on_change = on_output_dir_change
         self._default_dir = os.path.join(os.path.expanduser("~"), "Videos")
+        self._default_gif_dir = os.path.join(os.path.expanduser("~"), "Videos", "GIFs")
         os.makedirs(self._default_dir, exist_ok=True)
+        os.makedirs(self._default_gif_dir, exist_ok=True)
         self._build()
 
     def _build(self):
@@ -42,6 +44,8 @@ class SettingsTab(tk.Frame):
         b = scroll.inner
 
         self._build_output_folder(b)
+        Sep(b, bg=BD_SUBTLE).pack(fill="x")
+        self._build_gif_output_folder(b)
         Sep(b, bg=BD_SUBTLE).pack(fill="x")
         self._build_filename_template(b)
         Sep(b, bg=BD_SUBTLE).pack(fill="x")
@@ -80,7 +84,7 @@ class SettingsTab(tk.Frame):
 
     def _build_output_folder(self, parent):
         _, ctrl = self._row(parent, "Default output folder",
-                            "Where finished videos and GIFs are saved.")
+                            "Where finished videos are saved.")
         path_row = Frame(ctrl)
         path_row.pack(fill="x")
         path_row.columnconfigure(0, weight=1)
@@ -94,6 +98,24 @@ class SettingsTab(tk.Frame):
         Button(path_row, "Browse…", command=self._pick_folder, small=True,
                ).grid(row=0, column=1, padx=(0, 6))
         Button(path_row, "Open", command=self._open_folder, small=True, ghost=True,
+               ).grid(row=0, column=2)
+
+    def _build_gif_output_folder(self, parent):
+        _, ctrl = self._row(parent, "GIF output folder",
+                            "Where converted GIFs are saved.")
+        path_row = Frame(ctrl)
+        path_row.pack(fill="x")
+        path_row.columnconfigure(0, weight=1)
+
+        self._gif_dir_var = tk.StringVar(value=self._default_gif_dir)
+        path_lbl = tk.Label(path_row, textvariable=self._gif_dir_var,
+                             fg=FG, bg=BG_INPUT, font=(MONO, 11), anchor="w",
+                             highlightthickness=1, highlightbackground=BD,
+                             padx=8, pady=4)
+        path_lbl.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        Button(path_row, "Browse…", command=self._pick_gif_folder, small=True,
+               ).grid(row=0, column=1, padx=(0, 6))
+        Button(path_row, "Open", command=self._open_gif_folder, small=True, ghost=True,
                ).grid(row=0, column=2)
 
     def _build_filename_template(self, parent):
@@ -243,6 +265,16 @@ class SettingsTab(tk.Frame):
         if os.path.isdir(d):
             os.startfile(d)
 
+    def _pick_gif_folder(self):
+        folder = filedialog.askdirectory(initialdir=self._gif_dir_var.get())
+        if folder:
+            self._gif_dir_var.set(folder)
+
+    def _open_gif_folder(self):
+        d = self._gif_dir_var.get()
+        if os.path.isdir(d):
+            os.startfile(d)
+
     def _check_update(self):
         self._ver_lbl.configure(text="Checking…", fg=FG_DIM)
         def _go():
@@ -277,3 +309,6 @@ class SettingsTab(tk.Frame):
 
     def get_output_dir(self) -> str:
         return self._dir_var.get()
+
+    def get_gif_output_dir(self) -> str:
+        return self._gif_dir_var.get()
