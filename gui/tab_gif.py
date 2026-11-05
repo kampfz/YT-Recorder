@@ -46,6 +46,8 @@ class GifTab(tk.Frame):
         self._gif_anim_id = None
         self._current_gif_path = None
         self._video_aspect = 16 / 9  # Default to 16:9, updated when metadata loads
+        self._preview_width = 400
+        self._preview_height = int(self._preview_width / self._video_aspect)
         self._setup_styles()
         self._build()
 
@@ -400,11 +402,14 @@ class GifTab(tk.Frame):
         self._copy_btn.pack(side="right")
         self._copy_btn.configure(state="disabled")
 
-        # Striped preview canvas (16:9)
+        # Fixed-size preview canvas (doesn't resize with window)
+        self._preview_width = 400
+        self._preview_height = int(self._preview_width / self._video_aspect)
         self._prev_canvas = tk.Canvas(col, bg="#1a2030", bd=0,
-                                       highlightthickness=1, highlightbackground=BD)
-        self._prev_canvas.pack(fill="x")
-        self._prev_canvas.bind("<Configure>", self._redraw_preview)
+                                       highlightthickness=1, highlightbackground=BD,
+                                       width=self._preview_width, height=self._preview_height)
+        self._prev_canvas.pack(anchor="w")
+        self._redraw_preview()
 
         # Status
         tk.Label(col, text="STATUS", fg=FG_MUTED, bg=BG_PANEL,
@@ -429,9 +434,10 @@ class GifTab(tk.Frame):
         self._prog_bar.set(0)
 
     def _redraw_preview(self, event=None):
-        w = self._prev_canvas.winfo_width() or 400
+        w = self._preview_width
         h = max(int(w / self._video_aspect), 1)
-        self._prev_canvas.configure(height=h)
+        self._preview_height = h
+        self._prev_canvas.configure(width=w, height=h)
         if self._gif_frames:
             return
         self._prev_canvas.delete("all")
@@ -453,8 +459,8 @@ class GifTab(tk.Frame):
             if img.width and img.height:
                 self._video_aspect = img.width / img.height
                 self._redraw_preview()
-            canvas_w = self._prev_canvas.winfo_width() or 400
-            canvas_h = int(canvas_w / self._video_aspect)
+            canvas_w = self._preview_width
+            canvas_h = self._preview_height
             frame_idx = 0
             while True:
                 try:
@@ -476,8 +482,8 @@ class GifTab(tk.Frame):
             return
         frame_data = self._gif_frames[self._gif_frame_idx]
         photo, duration = frame_data
-        canvas_w = self._prev_canvas.winfo_width() or 400
-        canvas_h = self._prev_canvas.winfo_height() or int(canvas_w / self._video_aspect)
+        canvas_w = self._preview_width
+        canvas_h = self._preview_height
         self._prev_canvas.delete("all")
         self._prev_canvas.create_image(canvas_w // 2, canvas_h // 2, image=photo, anchor="center")
         self._gif_frame_idx = (self._gif_frame_idx + 1) % len(self._gif_frames)
